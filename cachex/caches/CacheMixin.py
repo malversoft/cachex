@@ -125,6 +125,8 @@ class CacheMixin():
 		# TODO: Clone or copy integrated lock object too?
 		return type(self)(**self.__configuration)
 
+	# WARNING: This hash implementation does not comply with hash condition:
+	# - For all x, y such that x == y, then hash(x) == hash(y).
 	def __hash__(self):
 		return self.__hash
 
