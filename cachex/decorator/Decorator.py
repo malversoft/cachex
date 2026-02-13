@@ -5,7 +5,6 @@ import functools, inspect, types
 
 from .DecoratorHelper import DecoratorHelper
 from .CacheKeyHelper import CacheKeyHelper
-from .CacheKeyFunction import CacheKeyFunction
 from .CacheDescription import CacheDescription
 from .CacheParameters import CacheParameters
 from .CachedException import CachedException, NonException
@@ -15,51 +14,75 @@ from .CachedException import CachedException, NonException
 # because in the bound method the attributes would point to the unbound version of the accessors.
 # To ammend this, wrapper descriptors must be used to deal with unbound methods.
 
-class BoundMethodWrapper():
+
+class FunctionWrapper():
 	"""
-	Wrapper descriptor for bound method.
-	Unlike Python builtin bound method objects, this allows to attach any attribute to it.
+	Wrapper descriptor for function.
+	Unlike Python builtin function/method objects, this allows to attach any attribute to it.
 	"""
-	def __init__(self, bound_method, attrs = {}):
-		self.__bound_method = bound_method
-		for a in attrs:
-			setattr(self, a, attrs[a])
+
+	# Map properties with corresponding accessor function.
+	@property
+	def cache(self):
+		return self._cache()
+	@property
+	def cache_lock(self):
+		return self._cache_lock()
+
+	def __init__(self, function, attrs = {}):
+		self._cache_wrapped_function = function
+		for attr in attrs:
+			setattr(self, attr, attrs[attr])
 	# Pass through '__self__', '__func__' and any other attributes of bound method.
-	def __getattr__(self, a):
-		return getattr(self.__bound_method, a)
+	# Pass through '__name__', '__qualname__' and any other attributes of unbound function.
+	def __getattr__(self, attr):
+		return getattr(self._cache_wrapped_function, attr)
 	# Must be callable.
 	def __call__(self, *args, **kwargs):
-		return self.__bound_method.__func__(*args, **kwargs)
+		return self._cache_wrapped_function(*args, **kwargs)
 
 
-class UnboundMethodWrapper():
+class BoundMethodWrapper(FunctionWrapper):
+	"""
+	Wrapper descriptor for bound method.
+	"""
+	# Must be callable.
+	def __call__(self, *args, **kwargs):
+		return self._cache_wrapped_function.__func__(*args, **kwargs)
+
+
+class UnboundMethodWrapper(FunctionWrapper):
 	"""
 	Wrapper descriptor for unbound method.
 	When referenced as a bound method of an instance, binds also the accessors to the instance
-	and provides a wrapper of the bound method with the bound accessors attached.
+	and provides a wrapper of the bound method with the accessors bound and attached.
 	"""
-	def __init__(self, unbound_function):
-		self._unbound_function = unbound_function
-		self.__module = self._unbound_function.__module__
-	# Pass through '__name__', '__qualname__' and any other attributes of unbound function.
-	def __getattr__(self, a):
-		return getattr(self._unbound_function, a)
-	# Must be callable.
-	def __call__(self, *args, **kwargs):
-		return self._unbound_function(*args, **kwargs)
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.__cache_module = self._cache_wrapped_function.__module__
 	# Descriptor getter.
 	def __get__(self, obj, objtype=None):
-		bound_method = self._bind_method(obj, objtype, self._unbound_function)		# Bind method.
+		bound_method = self._bind_method(obj, objtype, self._cache_wrapped_function)		# Bind method.
 		if inspect.ismethod(bound_method):
 			# Descriptor is being referenced as a bound method of a class or instance.
+			attrs_to_bind = (
+				'uncached', '_cache', '_cache_lock', 'cache_key', 'cache_clear', 'cache_info',
+				'cache_parameters', 'cache_configuration',
+			)
+			attrs_not_to_bind = (
+			)
 			obj = bound_method.__self__
 			attrs = {
-				f : getattr(self._unbound_function, f).__get__(obj, None)
-				for f in ('uncached', 'cache', 'cache_clear', 'cache_info', 'cache_parameters')
+				attr : getattr(self._cache_wrapped_function, attr).__get__(obj, None)
+				for attr in (attrs_to_bind)
 			}
+			attrs.update({
+				attr : getattr(self._cache_wrapped_function, attr)
+				for attr in (attrs_not_to_bind)
+			})
 			# Setup bound method wrapper with attributes set.
 			bound_method = BoundMethodWrapper(bound_method, attrs)
-			bound_method.__module__ = self.__module		# Fake the module name as the original.
+			bound_method.__module__ = self.__cache_module		# Fake the module name as the original.
 			# Return bound method, so it validates against inspect.ismethod() and similar type comparisons.
 			bound_method = types.MethodType(bound_method, obj)
 		return bound_method
@@ -75,14 +98,14 @@ class ClassMethodWrapper(UnboundMethodWrapper):
 	on the underlying function descriptor when bounding a class method.
 	This wrapper fakes the Python classmethod descriptor to do exactly that.
 	When referenced as a bound method of a class or instance, binds also the accessors to the class
-	and provides a wrapper of the bound method with the bound accessors attached.
+	and provides a wrapper of the bound method with the accessors bound and attached.
 	"""
-	def __init__(self, unbound_function):
-		super().__init__(unbound_function)
-		self.__classmethod = classmethod(unbound_function)
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.__cache_classmethod = classmethod(self._cache_wrapped_function)
 	# Bind method to class.
 	def _bind_method(self, obj, objtype, method):
-		return super()._bind_method(obj, objtype, self.__classmethod)
+		return super()._bind_method(obj, objtype, self.__cache_classmethod)
 
 
 class FunctionDefinition():
@@ -258,7 +281,7 @@ class Decorator():
 			# Create cache accessors.
 
 			get_cache = None
-			access_cache = None
+			cache_accessor = None
 			shared = config.shared
 
 			if DecoratorHelper.is_callable(shared):
@@ -266,21 +289,21 @@ class Decorator():
 
 				get_cache, is_dependent = get_accessor(shared, 'shared cache')
 				if not is_dependent:
-					access_cache = lambda obj_self = None, obj_other = None: shared()
+					cache_accessor = lambda obj_self = None, obj_other = None: shared()
 
 				config_irrelevant.append('cache')
 
 			elif not shared and funcdef.isunboundmethod and not funcdef.isclassmethod:
 
 				# Unique method cache per object instance.
-				caches_property = DecoratorHelper.defaults._attr_cache
+				attr_cache_name = DecoratorHelper.defaults._attr_cache		# Make this fixed, as defaults may change after performing the decoration.
 				def get_cache(*args):
 					obj = get_self(*args)
 					try:
-						cstorage = getattr(obj, caches_property)
+						cstorage = getattr(obj, attr_cache_name)
 					except AttributeError:
 						cstorage = {}
-						setattr(obj, caches_property, cstorage)
+						setattr(obj, attr_cache_name, cstorage)
 					try:
 						c = cstorage[funcname]
 					except KeyError:
@@ -288,11 +311,11 @@ class Decorator():
 						cstorage[funcname] = c
 					return c
 
-			if access_cache is None:
+			if cache_accessor is None:
 
 				if get_cache is not None:
 
-					def access_cache(obj_self = None, obj_other = None):
+					def cache_accessor(obj_self = None, obj_other = None):
 						if obj_other:
 							# Called from bound method with argument.
 							obj_self = obj_other
@@ -310,19 +333,19 @@ class Decorator():
 
 					# Function owned cache.
 					get_cache = lambda *args: cache
-					access_cache = lambda obj_self = None, obj_other = None: cache
+					cache_accessor = lambda obj_self = None, obj_other = None: cache
 					if not funcdef.isunboundmethod:
 						config_irrelevant.append('shared')
 
 			# Create wrapper function.
 
 			call = funcdef.call
-			key = CacheKeyFunction(funcdef, config)
+			key = CacheKeyHelper.make_key_func(funcdef, config)
 
 			# Compatibility with cachetools 'lock' argument.
 			lock = config.lock
 			if DecoratorHelper.is_callable(lock):
-				# Analize lock getter.
+				# Analyze lock getter.
 				get_altlock, _ = get_accessor(lock, 'lock')
 			elif lock:
 				get_altlock = lambda *args: lock
@@ -362,19 +385,23 @@ class Decorator():
 			# Setup rest of cache accessors.
 
 			def cache_clear(obj_self=None, obj_other=None):
-				cache = access_cache(obj_self, obj_other)
+				cache = cache_accessor(obj_self, obj_other)
 				lock = get_altlock(obj_self) or cache.lock
 				with lock:
 					cache.clear()
 			def cache_info(obj_self=None, obj_other=None):
-				cache = access_cache(obj_self, obj_other)
+				cache = cache_accessor(obj_self, obj_other)
 				lock = get_altlock(obj_self) or cache.lock
 				with lock:
 					return cache.info
+			def _cache_lock(obj_self=None, obj_other=None):
+				cache = cache_accessor(obj_self, obj_other)
+				lock = get_altlock(obj_self) or cache.lock
+				return lock
 			typed = config.typed
 			def cache_parameters(obj_self=None, obj_other=None):
 				params = {'typed' : typed}
-				params.update(access_cache(obj_self, obj_other).parameters)
+				params.update(cache_accessor(obj_self, obj_other).parameters)
 				return params
 
 			# Compose configuration information.
@@ -396,14 +423,16 @@ class Decorator():
 
 			attrs = {
 				'uncached': func,					# Uncached variant of function.
-				'cache': access_cache,				# Access to cache object used.
+				'_cache': cache_accessor,			# Access to cache object used.
+				'_cache_lock': _cache_lock,			# Lock used.
+				'cache_key': key,					# Key function used.
 				'cache_clear': cache_clear,			# Clear the cache.
 				'cache_info': cache_info,			# Cache information.
-				'cache_parameters': cache_parameters,			# Cache parameters.
-				'cache_configuration': lambda: config.copy(),	# Cache configuration.
+				'cache_parameters': cache_parameters,					# Cache parameters.
+				'cache_configuration': lambda *args: config.copy(),		# Cache configuration accessor.
 			}
-			for a in attrs:
-				setattr(wrapper, a, attrs[a])
+			for attr in attrs:
+				setattr(wrapper, attr, attrs[attr])
 
 			# Return decorated function/method.
 
@@ -418,6 +447,6 @@ class Decorator():
 				return UnboundMethodWrapper(wrapper)
 			else:
 				# Return function.
-				return wrapper
+				return FunctionWrapper(wrapper)
 
 		self.decorator = decorator

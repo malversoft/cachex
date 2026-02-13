@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 
 
-import threading
-
-
 # Cache configuration defaults.
 
 class AbstractCacheDefaults():

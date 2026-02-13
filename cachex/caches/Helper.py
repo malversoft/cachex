@@ -4,7 +4,7 @@
 from collections.abc import MutableMapping
 import inspect
 
-from .CacheWrapper import CacheWrapper
+from .CacheMixin import CacheMixin
 from .CacheDefaults import CacheDefaults
 
 
@@ -50,7 +50,7 @@ class Helper():
 
 	@classmethod
 	def _wrap_class(cls, kls):
-		return type(kls.__name__, (CacheWrapper, kls), {})
+		return type(kls.__name__, (CacheMixin, kls), {})
 
 	@classmethod
 	def convert_class(cls, kls):

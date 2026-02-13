@@ -15,7 +15,7 @@ class DecoratorHelper():
 	defaults = CacheDefaults()
 
 	@classmethod
-	def is_wrong_cache_class(cls, kls):
+	def is_standard_cache_class(cls, kls):
 		kls = not isinstance(kls, type) and type(kls) or kls
 		return Helper.is_cache_class(kls)
 

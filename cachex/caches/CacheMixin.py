@@ -60,7 +60,7 @@ class CountersContext():
 		self.__cache.counters_enabled = value
 
 
-class CacheWrapper():
+class CacheMixin():
 
 	def __init__(self, *args, **kwargs):
 

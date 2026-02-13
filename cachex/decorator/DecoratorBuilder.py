@@ -78,13 +78,22 @@ class DecoratorBuilder():
 				return CacheDescription(caches.TLRUCache, locals())
 			return cls._makenode(transformer, cachefactory)
 
-	try: caches.UnboundedCache, caches.UnboundedTTLCache
+	try: caches.UnboundedCache
 	except AttributeError: pass
 	else:
 		@classmethod
 		def unbounded_cache(cls, transformer):
 			def cachefactory():
 				return CacheDescription(caches.UnboundedCache)
+			return cls._makenode(transformer, cachefactory)
+
+	try: caches.UnboundedTTLCache
+	except AttributeError: pass
+	else:
+		@classmethod
+		def unbounded_ttl_cache(cls, transformer):
+			def cachefactory(ttl = None, timer = None):
+				return CacheDescription(caches.UnboundedTTLCache)
 			return cls._makenode(transformer, cachefactory)
 
 	@classmethod
@@ -122,7 +131,7 @@ class DecoratorBuilder():
 				# Called with cache argument. Return decorator.
 				decorator = Decorator(*args, _transformer=transformer, **kwargs)
 				return lambda func: transformer(decorator(func))
-			elif DecoratorHelper.is_wrong_cache_class(cachearg):
+			elif DecoratorHelper.is_standard_cache_class(cachearg):
 				# Protection against using standard mutable mappings.
 				raise TypeError('Cache type must be converted before used in decorator: %s.' % (not isinstance(cachearg, type) and type(cachearg) or cachearg).__name__)
 			else:
