@@ -187,7 +187,7 @@ The cache to use for memoizing call results can be specified in four ways.
     @cached.lru_cache(maxsize)
     ```
 
-  - Cache with most recently used (MRU) eviction algorithm (requires cachetools version >= 4.2.0).
+  - Cache with most recently used (MRU) eviction algorithm (requires cachetools version >= 4.2.0 and < 6.0.0).
 
     ```python
     @cached.mru_cache(maxsize)
@@ -215,6 +215,12 @@ The cache to use for memoizing call results can be specified in four ways.
 
     ```python
     @cached.unbounded_cache()
+    ```
+
+  - Unbounded cache with per-item time-to-live (TTL) (requires cachetools version >= 4.0.0).
+
+    ```python
+    @cached.unbounded_ttl_cache(ttl, timer)
     ```
 
   Please refer to the specific [cache implementations](caches.md#cache-implementations) for information about the meaning of the parameters.
@@ -473,7 +479,7 @@ All the decorator variants accept some generic parameters to specify the caching
             return some_value
     ```
 
-    __Note__: The provided lock object must be created only once, not each time the function is called. The provided function will be called an undetermined number of times, so it would be an error to create a lock object each time it is called.
+    __Note__: The provided lock object must be created only once, not each time the function is called. The provider function will be called an undetermined number of times, so it would be an error to create a lock object each time it is called.
 
     If the provided function accepts two arguments, the cached function name will be passed too. This allows the custom lock provider to know which method the lock object is for.
 
@@ -653,14 +659,14 @@ instance1 = MyClass()
 instance2 = MyClass()
 
 # All class instances share the same method cache.
-assert(instance1.mymethod.cache() == instance2.mymethod.cache())
+assert(instance1.mymethod.cache == instance2.mymethod.cache)
 
 instance1.mymethod("a")    # Cache a pair of results.
 instance1.mymethod("b")    # using one specific instance.
 
 # Results cached for all instances.
-assert(instance1.mymethod.cache().currsize == 2)
-assert(instance2.mymethod.cache().currsize == 2)
+assert(instance1.mymethod.cache.currsize == 2)
+assert(instance2.mymethod.cache.currsize == 2)
 ```
 
 Example of method using per-instance independent cache.
@@ -677,14 +683,14 @@ instance1 = MyClass()
 instance2 = MyClass()
 
 # Each instance uses its own independent cache.
-assert(instance1.mymethod.cache() != instance2.mymethod.cache())
+assert(instance1.mymethod.cache != instance2.mymethod.cache)
 
 instance1.mymethod("a")    # Cache a pair of results.
 instance1.mymethod("b")    # using one specific instance.
 
 # Results cached only in that instance.
-assert(instance1.mymethod.cache().currsize == 2)
-assert(instance2.mymethod.cache().currsize == 0)
+assert(instance1.mymethod.cache.currsize == 2)
+assert(instance2.mymethod.cache.currsize == 0)
 ```
 
 <br/>
@@ -896,10 +902,20 @@ def myfunction(some_arg, ...):
 
   Allows to call the original uncached version of the cached function or method.
 
-- myfunction```.cache()```
+- myfunction```.cache```\
+  myfunction```._cache()```
 
   Allows to access the cache instance being used to memoize the function or method calls.
+
+- myfunction```.cache_lock```\
+  myfunction```._cache_lock()```
+
+  Returns the lock being used to access the cache.
+
+- myfunction```.cache_key```
  
+  Returns the key function used to access the cache items.
+
 - myfunction```.cache_clear()```
 
   Clears or invalidates the cache being used.
@@ -911,6 +927,10 @@ def myfunction(some_arg, ...):
 - myfunction```.cache_parameters()```
 
   Returns a new dictionary showing the value for ```typed``` parameter along with the parameters used to create the cache. This is for information purposes only. Mutating the values has no effect.
+
+- myfunction```.cache_configuration()```
+
+  Returns a new dictionary showing all the relevant parameters used for the cache setup. This is for information purposes only. Mutating the values has no effect.
 
 These accessors will always point to the right cache instance used for the referenced function or method they are attached to, no matter if caching functions or methods, if using a shared cache or per-instance cache, or whatever cache specification is used in the decorator.
 
@@ -929,15 +949,15 @@ instance = MyClass()
 
 # This points to the cache specified in the decorator,
 # actually unused as each bound method uses a clone of it.
-MyClass.mymethod.cache()
+MyClass.mymethod.cache
 
 # And this points to the independent cache
 # used by the specific instance.
-instance.mymethod.cache()
+instance.mymethod.cache
 
 # The cache used by a specific instance can also be accessed
 # with an unbound call.
-MyClass.mymethod.cache(instance)
+MyClass.mymethod._cache(instance)
 ```
 
 This coherence is also valid for the ```uncached``` accessor.
@@ -949,6 +969,60 @@ instance.mymethod.uncached(some_arg, ...)
 
 # Unbound calls can also be used, as with any method.
 MyClass.mymethod.uncached(instance, some_arg, ...)
+```
+
+Accessors can also be used to access or invalidate individual cache items.
+
+```python
+@cached
+def myfunction(some_arg, ...):
+    ...
+    return some_value
+
+# Always use the cache key function accessor for accessing cache items.
+with myfunction.cache_lock:
+    key = myfunction.cache_key(42)
+    old_value = myfunction.cache.pop(key, None)
+    myfunction.cache[key] = new_value
+```
+
+When the ```stateful``` parameter feature is used, the resulting key function takes into account the object state as part of the cache key. So using the original key function to access cache items will not work. The ```cache_key``` accessor must always be used to obtain cache keys from function arguments.
+
+```python
+def keyfunc(some_arg, ...):
+    return hash(some_arg)
+
+class MyClass():
+
+    @cached(key=keyfunc, stateful=True)
+    def mymethod(self, some_arg, ...):
+        ...
+        return some_value
+
+    @cached.classmethod(key=keyfunc, stateful=True)
+    def myclassmethod(cls, some_arg, ...):
+        ...
+        return some_value
+
+instance = MyClass()
+
+with instance.mymethod.cache_lock:
+    # This will not work.
+    #key = keyfunc(42)
+    # This will work.
+    key = instance.mymethod.cache_key(42)
+    ...
+    old_value = instance.mymethod.cache.pop(key, None)
+    instance.mymethod.cache[key] = new_value
+
+with MyClass.myclassmethod.cache_lock:
+    # This will not work.
+    #key = keyfunc(42)
+    # This will work.
+    key = MyClass.myclassmethod.cache_key(MyClass, 42)
+    ...
+    old_value = MyClass.myclassmethod.cache.pop(key, None)
+    MyClass.myclassmethod.cache[key] = new_value
 ```
 
 <br/>
@@ -1023,7 +1097,7 @@ Some other decorator features not so relevant as to be on the big list.
 
 - ### Thread-safe access to cache
 
-  Access to the cache is made thread-safe by default, using either the [integrated cache lock](./caches.md#integrated-locking-capability) or the mutex object provided in the ```lock``` parameter.
+  Access to the cache is made thread-safe by default, using either the mutex object provided in the ```lock``` parameter or the [integrated cache lock](./caches.md#integrated-locking-capability).
 
   __Note__: Only access to the cache is made thread-safe. The decorated function is called outside the mutex context and should be thread-safe by itself.
 
@@ -1119,7 +1193,6 @@ The decorator makes its best to be compatible with other memoizing solutions lik
     @cachetools.func.fifo_cache[(maxsize, typed)]
     @cachetools.func.lfu_cache[(maxsize, typed)]
     @cachetools.func.lru_cache[(maxsize, typed)]
-    @cachetools.func.mru_cache[(maxsize, typed)]
     @cachetools.func.rr_cache[(maxsize, choice, typed)]
     @cachetools.func.ttl_cache[(maxsize, ttl, timer, typed)]
     @cachetools.func.tlru_cache[(maxsize, ttu, timer, typed)]
@@ -1131,7 +1204,6 @@ The decorator makes its best to be compatible with other memoizing solutions lik
     @cached.fifo_cache[(maxsize, typed)]
     @cached.lfu_cache[(maxsize, typed)]
     @cached.lru_cache[(maxsize, typed)]
-    @cached.mru_cache[(maxsize, typed)]
     @cached.rr_cache[(maxsize, choice, typed)]
     @cached.ttl_cache[(maxsize, ttl, timer, typed)]
     @cached.tlru_cache[(maxsize, ttu, timer, typed)]
@@ -1181,7 +1253,7 @@ The decorator makes its best to be compatible with other memoizing solutions lik
 
 - Accessors
 
-  The [cachex] decorator also provides the cache [accesors](#accessors) provided by the [functools] or [cachetools] decorators.
+  The [cachex] decorator also provides the cache [accesors](#accessors) provided by the [functools] and [cachetools] decorators.
 
   - cached_function```.cache_info()```
   - cached_function```.cache_clear()```
