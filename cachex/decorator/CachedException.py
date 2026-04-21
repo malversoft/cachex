@@ -26,7 +26,7 @@ class CachedException():
 		if self._traceback and self._clean_traced_modules:
 			# Skip specified modules' frames from the top of the trace.
 			tb = self._traceback
-			rexp_modules = [s.replace('/', '\\' + os.path.sep).replace('.', '\.').replace('*', '[\w]*') for s in self._clean_traced_modules]
+			rexp_modules = [s.replace('/', '\\' + os.path.sep).replace('.', '\\.').replace('*', '[\\w]*') for s in self._clean_traced_modules]
 			rexp = '(.*\\' + os.path.sep + ')?(' + '|'.join(rexp_modules) + ')$'
 			for frame in traceback.extract_tb(tb):
 				if re.match(rexp, frame.filename):
